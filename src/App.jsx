@@ -49,6 +49,7 @@ const dbToVeh = (r) => ({
   commission_date: r.commission_date || "",
   origine_fonds: r.origine_fonds || "",
   origine_fonds_detail: r.origine_fonds_detail || "",
+  archived: r.archived || false,
   ventePrevueDZD: r.vente_prevue_dzd ?? "", venteReelleDZD: r.vente_reelle_dzd ?? "",
   ...Object.fromEntries(FRAIS_FIXES.flatMap(f => [
     [f.key, r[f.key] ?? ""],
@@ -68,6 +69,7 @@ const vehToDB = (f) => ({
   commission_date: f.commission_date || null,
   origine_fonds: f.origine_fonds || null,
   origine_fonds_detail: f.origine_fonds_detail || null,
+  archived: f.archived || false,
   vente_prevue_dzd: f.ventePrevueDZD ? Number(f.ventePrevueDZD) : null,
   vente_reelle_dzd: f.venteReelleDZD ? Number(f.venteReelleDZD) : null,
   ...Object.fromEntries(FRAIS_FIXES.flatMap(ff => [
@@ -453,6 +455,7 @@ export default function App() {
   const [toast, setToast] = useState(null);
   const [filtreAssocie, setFiltreAssocie] = useState("Tous");
   const [datePrevi, setDatePrevi] = useState("");
+  const [showArchived, setShowArchived] = useState(false);
 
   const showToast = (msg, type = "success") => { setToast({ msg, type }); setTimeout(() => setToast(null), 2500); };
 
@@ -479,10 +482,12 @@ export default function App() {
   // ── Calculs ────────────────────────────────────────────────────
   const vehC = useMemo(() => vehicules.map(v => ({ ...v, ...calcVehicule(v, params) })), [vehicules, params]);
 
-  const vehFiltered = useMemo(() =>
-    filtreAssocie === "Tous" ? vehC : vehC.filter(v => v.acheteur === filtreAssocie),
-    [vehC, filtreAssocie]
-  );
+  // Véhicules filtrés (associé + archivés)
+  const vehFiltered = useMemo(() => {
+    let v = showArchived ? vehC : vehC.filter(v => !v.archived);
+    if (filtreAssocie !== "Tous") v = v.filter(v => v.acheteur === filtreAssocie);
+    return v;
+  }, [vehC, filtreAssocie, showArchived]);
 
   const soldeReel = useMemo(() =>
     params.soldeDepart + tresorerie.reduce((a, m) => a + montantDZD(m, params), 0),
@@ -499,24 +504,40 @@ export default function App() {
     return previsions.map(m => { const d = montantDZD(m, params); c += d; return { ...m, dz: d, sc: c }; });
   }, [previsions, params, soldeReel]);
 
-  // Solde prévisionnel à une date donnée
-  const soldeALaDate = useMemo(() => {
-    if (!datePrevi) return null;
-    const filtered = prevS.filter(m => m.date <= datePrevi);
-    return filtered.length ? filtered.at(-1).sc : soldeReel;
-  }, [prevS, datePrevi, soldeReel]);
-
   const pointBas = useMemo(() => prevS.length ? Math.min(...prevS.map(p => p.sc)) : soldeReel, [prevS, soldeReel]);
   const soldePrevFin = useMemo(() => prevS.length ? prevS.at(-1).sc : soldeReel, [prevS, soldeReel]);
 
-  // KPIs filtrés par associé
-  const cashEngage = useMemo(() => vehFiltered.reduce((a, v) => a + (v.cashEngage || 0), 0), [vehFiltered]);
-  const margeReal = useMemo(() => vehFiltered.filter(v => v.margeReelle !== "").reduce((a, v) => a + v.margeReelle, 0), [vehFiltered]);
-  const beneficePrevu = useMemo(() => vehFiltered.filter(v => v.margePrevue !== "" && v.statut !== "Vendu").reduce((a, v) => a + v.margePrevue, 0), [vehFiltered]);
-  const commissions = useMemo(() => vehFiltered.reduce((a, v) => a + (Number(v.commercial_commission) || 0), 0), [vehFiltered]);
-  const enCours = useMemo(() => vehFiltered.filter(v => v.statut && v.statut !== "Vendu" && v.statut !== "Annulé").length, [vehFiltered]);
-  const vendus = useMemo(() => vehFiltered.filter(v => v.statut === "Vendu").length, [vehFiltered]);
-  const alerte = pointBas < params.reserve;
+  // ── KPIs avec prise en compte de la date prévisionnelle ───────
+  // Trésorerie à la date choisie (réel + prévisions jusqu'à cette date)
+  const soldeALaDate = useMemo(() => {
+    if (!datePrevi) return null;
+    const prevFiltered = prevS.filter(m => m.date <= datePrevi);
+    return prevFiltered.length ? prevFiltered.at(-1).sc : soldeReel;
+  }, [prevS, datePrevi, soldeReel]);
+
+  // Véhicules "actifs" à la date choisie :
+  // - si pas de date : état actuel
+  // - si date : on considère vendus les véhicules dont vente_reelle <= datePrevi
+  const vehALaDate = useMemo(() => {
+    if (!datePrevi) return vehFiltered;
+    return vehFiltered.map(v => {
+      if (v.venteReelle && v.venteReelle <= datePrevi) return { ...v, _statutDate: "Vendu" };
+      if (v.arrivePrevue && v.arrivePrevue <= datePrevi && v.statut === "En transit") return { ...v, _statutDate: "Arrivé" };
+      return { ...v, _statutDate: v.statut };
+    });
+  }, [vehFiltered, datePrevi]);
+
+  const soldeDisplay = datePrevi ? (soldeALaDate ?? soldeReel) : soldeReel;
+  const soldePrevDisplay = datePrevi ? (soldeALaDate ?? soldeReel) : soldePrevFin;
+
+  // KPIs filtrés par associé + date
+  const cashEngage = useMemo(() => vehALaDate.filter(v => (v._statutDate || v.statut) !== "Vendu" && (v._statutDate || v.statut) !== "Annulé").reduce((a, v) => a + (v.cashEngage || 0), 0), [vehALaDate]);
+  const margeReal = useMemo(() => vehALaDate.filter(v => v.margeReelle !== "" && ((v._statutDate || v.statut) === "Vendu" || v.venteReelleDZD)).reduce((a, v) => a + v.margeReelle, 0), [vehALaDate]);
+  const beneficePrevu = useMemo(() => vehALaDate.filter(v => v.margePrevue !== "" && (v._statutDate || v.statut) !== "Vendu").reduce((a, v) => a + v.margePrevue, 0), [vehALaDate]);
+  const commissions = useMemo(() => vehALaDate.filter(v => (v._statutDate || v.statut) === "Vendu" || v.venteReelleDZD).reduce((a, v) => a + (Number(v.commercial_commission) || 0), 0), [vehALaDate]);
+  const enCours = useMemo(() => vehALaDate.filter(v => { const s = v._statutDate || v.statut; return s && s !== "Vendu" && s !== "Annulé"; }).length, [vehALaDate]);
+  const vendus = useMemo(() => vehALaDate.filter(v => (v._statutDate || v.statut) === "Vendu").length, [vehALaDate]);
+  const alerte = (datePrevi ? soldeDisplay : pointBas) < params.reserve;
 
   const vehiculeIds = vehicules.map(v => ({ id: v.id, label: `#${v.id} ${v.modele} (${v.acheteur})` }));
 
@@ -550,6 +571,12 @@ export default function App() {
     const { data, error } = await supabase.from("vehicules").insert(vehToDB(rest)).select().single();
     if (error) { showToast("Erreur : " + error.message, "danger"); return; }
     setVehicules(p => [...p, dbToVeh(data)]); showToast("Véhicule dupliqué ✓");
+  };
+
+  const archiveVeh = async (id, archived) => {
+    await supabase.from("vehicules").update({ archived }).eq("id", id);
+    setVehicules(p => p.map(v => v.id === id ? { ...v, archived } : v));
+    showToast(archived ? "Véhicule archivé" : "Véhicule désarchivé");
   };
 
   const addFlux = (table, setter) => async (f) => { const { data, error } = await supabase.from(table).insert(fluxToDB(f)).select().single(); if (error) { showToast("Erreur : " + error.message, "danger"); return; } setter(p => [...p, dbToFlux(data)].sort((a, b) => a.date.localeCompare(b.date))); setModal(null); showToast("Enregistré"); };
@@ -624,13 +651,13 @@ export default function App() {
             <div style={kG}>
               <KPI label="Solde de départ" value={fmtDZD(params.soldeDepart)} sub={fmtEUR(params.soldeDepart, params.tauxEUR)} color="muted" />
               <KPI label="Solde réel actuel" value={fmtDZD(soldeReel)} sub={fmtEUR(soldeReel, params.tauxEUR)} color={soldeReel >= 0 ? "amber" : "red"} />
-              <KPI label="Solde prévisionnel fin" value={fmtDZD(soldePrevFin)} sub={fmtEUR(soldePrevFin, params.tauxEUR)} color={soldePrevFin >= 0 ? "amber" : "red"} />
+              <KPI label={datePrevi ? `Solde au ${datePrevi}` : "Solde prévisionnel fin"} value={fmtDZD(soldePrevDisplay)} sub={fmtEUR(soldePrevDisplay, params.tauxEUR)} color={soldePrevDisplay >= 0 ? "amber" : "red"} />
               <KPI label="Point bas prévu" value={fmtDZD(pointBas)} sub={`Réserve : ${fmtEUR(params.reserve, params.tauxEUR)}`} color={alerte ? "red" : "amber"} alert={alerte} />
             </div>
 
             {/* Sélecteur date prévisionnel */}
             <div style={{ display: "flex", alignItems: "center", gap: 12, background: "#0f172a", border: "1px solid #1e293b", borderRadius: 10, padding: "10px 16px", marginBottom: 16 }}>
-              <span style={{ fontSize: 12, color: "#64748b", whiteSpace: "nowrap" }}>État prévisionnel au :</span>
+              <span style={{ fontSize: 12, color: "#64748b", whiteSpace: "nowrap" }}>📅 Simuler le tableau de bord au :</span>
               <input type="date" value={datePrevi} onChange={e => setDatePrevi(e.target.value)} style={{ background: "#1e293b", border: "1px solid #334155", color: "#e2e8f0", borderRadius: 8, padding: "5px 10px", fontSize: 12 }} />
               {datePrevi && soldeALaDate !== null && (
                 <span style={{ ...mono, fontSize: 13, fontWeight: 700, color: soldeALaDate >= params.reserve ? "#f59e0b" : "#f87171" }}>
@@ -673,14 +700,17 @@ export default function App() {
           {/* ── VÉHICULES ────────────────────────────────────────── */}
           {tab === "vehicules" && <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-              <div style={{ fontSize: 12, color: "#64748b" }}>{vehFiltered.length} / {vehC.length} véhicule{vehC.length > 1 ? "s" : ""}{filtreAssocie !== "Tous" ? ` — ${filtreAssocie}` : ""}</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ fontSize: 12, color: "#64748b" }}>{vehFiltered.length} véhicule{vehFiltered.length > 1 ? "s" : ""}{filtreAssocie !== "Tous" ? ` — ${filtreAssocie}` : ""}</div>
+                <button onClick={() => setShowArchived(p => !p)} style={{ fontSize: 11, padding: "3px 10px", borderRadius: 99, fontWeight: 600, cursor: "pointer", border: "1px solid #334155", background: showArchived ? "#334155" : "#1e293b", color: showArchived ? "#f1f5f9" : "#64748b" }}>{showArchived ? "🗂 Masquer archivés" : "🗂 Afficher archivés"}</button>
+              </div>
               <Btn onClick={() => setModal("veh")}>+ Ajouter un véhicule</Btn>
             </div>
             {vehFiltered.length === 0 ? <div style={{ textAlign: "center", padding: "40px 20px", color: "#334155", fontSize: 13 }}>Aucun véhicule.</div> :
               <div style={{ overflowX: "auto" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                   <thead><tr>{["#","Modèle","Acheteur","Associé","Statut","Coût total","Prix prévu","Prix réel","Marge nette","Marge %","Commission","Cash engagé",""].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
-                  <tbody>{vehFiltered.map(v => <tr key={v.id}>
+                  <tbody>{vehFiltered.map(v => <tr key={v.id} style={{ opacity: v.archived ? 0.45 : 1 }}>
                     <td style={{ ...td, ...mono, color: "#475569", fontSize: 11 }}>{v.id}</td>
                     <td style={{ ...td, color: "#f1f5f9", fontWeight: 500 }}>{v.modele}{v.chassis && <div style={{ fontSize: 10, color: "#475569", ...mono }}>{v.chassis}</div>}</td>
                     <td style={td}><AssociBadge nom={v.acheteur} /></td>
@@ -696,6 +726,7 @@ export default function App() {
                     <td style={td}><div style={{ display: "flex", gap: 4 }}>
                       <Btn variant="info" small onClick={() => dupliquerVeh(v)} title="Dupliquer">⧉</Btn>
                       <Btn variant="ghost" small onClick={() => setModal({ edit: v })}>✏</Btn>
+                      <Btn variant={v.archived ? "success" : "ghost"} small onClick={() => archiveVeh(v.id, !v.archived)} title={v.archived ? "Désarchiver" : "Archiver"}>{v.archived ? "↩" : "🗂"}</Btn>
                       <Btn variant="danger" small onClick={() => delVeh(v.id)}>✕</Btn>
                     </div></td>
                   </tr>)}</tbody>
