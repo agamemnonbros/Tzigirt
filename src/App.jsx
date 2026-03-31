@@ -13,18 +13,18 @@ const CATEGORIES_FLUX = ["Achat véhicule","Change USD","Fret/transport","Douane
 
 // Frais fixes détaillés (image)
 const FRAIS_FIXES = [
-  { key: "fret",                 label: "Fret / Transport",          dateKey: "date_fret" },
-  { key: "dedouanement",         label: "Dédouanement",              dateKey: "date_dedouanement" },
-  { key: "tvn",                  label: "TVN (Taxe Véhicule Neuf)",  dateKey: "date_tvn" },
-  { key: "degroupage",           label: "Dégroupage",                dateKey: "date_degroupage" },
-  { key: "transitaire",          label: "Transitaire",               dateKey: "date_transitaire" },
-  { key: "commission_passeport", label: "Commission Passeport",      dateKey: "date_commission_passeport" },
-  { key: "ingenieur_mines",      label: "Ingénieur des Mines",       dateKey: "date_ingenieur_mines" },
-  { key: "quittance",            label: "Quittance",                 dateKey: "date_quittance" },
-  { key: "assurance_port",       label: "Assurance (Sortie de port)",dateKey: "date_assurance_port" },
-  { key: "timbre",               label: "Timbre",                    dateKey: "date_timbre" },
-  { key: "frais_cheque",         label: "Frais chèque certifié",     dateKey: "date_frais_cheque" },
-  { key: "autres_frais",         label: "Autres frais",              dateKey: null },
+  { key: "fret",                 label: "Fret / Transport",           dateKey: "date_fret",                   devKey: "fret_devise" },
+  { key: "dedouanement",         label: "Dédouanement",               dateKey: "date_dedouanement",           devKey: "dedouanement_devise" },
+  { key: "tvn",                  label: "TVN (Taxe Véhicule Neuf)",   dateKey: "date_tvn",                    devKey: "tvn_devise" },
+  { key: "degroupage",           label: "Dégroupage",                 dateKey: "date_degroupage",             devKey: "degroupage_devise" },
+  { key: "transitaire",          label: "Transitaire",                dateKey: "date_transitaire",            devKey: "transitaire_devise" },
+  { key: "commission_passeport", label: "Commission Passeport",       dateKey: "date_commission_passeport",   devKey: "commission_passeport_devise" },
+  { key: "ingenieur_mines",      label: "Ingénieur des Mines",        dateKey: "date_ingenieur_mines",        devKey: "ingenieur_mines_devise" },
+  { key: "quittance",            label: "Quittance",                  dateKey: "date_quittance",              devKey: "quittance_devise" },
+  { key: "assurance_port",       label: "Assurance (Sortie de port)", dateKey: "date_assurance_port",         devKey: "assurance_port_devise" },
+  { key: "timbre",               label: "Timbre",                     dateKey: "date_timbre",                 devKey: "timbre_devise" },
+  { key: "frais_cheque",         label: "Frais chèque certifié",      dateKey: "date_frais_cheque",           devKey: "frais_cheque_devise" },
+  { key: "autres_frais",         label: "Autres frais",               dateKey: null,                          devKey: "autres_frais_devise" },
 ];
 
 const fmt = (n, dec = 0) => { if (n === "" || n === null || n === undefined || isNaN(Number(n))) return "—"; return new Intl.NumberFormat("fr-FR", { minimumFractionDigits: dec, maximumFractionDigits: dec }).format(Number(n)); };
@@ -45,6 +45,7 @@ const dbToVeh = (r) => ({
   // frais détaillés
   ...Object.fromEntries(FRAIS_FIXES.flatMap(f => [
     [f.key, r[f.key] ?? ""],
+    [f.devKey, r[f.devKey] || "DZD"],
     ...(f.dateKey ? [[f.dateKey, r[f.dateKey] || ""]] : [])
   ])),
   date_fret: r.date_fret || "",
@@ -62,6 +63,7 @@ const vehToDB = (f) => ({
   vente_reelle_dzd: f.venteReelleDZD ? Number(f.venteReelleDZD) : null,
   ...Object.fromEntries(FRAIS_FIXES.flatMap(ff => [
     [ff.key, Number(f[ff.key]) || 0],
+    [ff.devKey, f[ff.devKey] || "DZD"],
     ...(ff.dateKey ? [[ff.dateKey, f[ff.dateKey] || null]] : [])
   ])),
   date_fret: f.date_fret || null,
@@ -74,7 +76,12 @@ const fluxToDB = (f) => ({ date: f.date, type: f.type, categorie: f.categorie, i
 function calcVehicule(v, params) {
   const taux = Number(v.tauxVehicule) || Number(params.tauxUSD);
   const achatDZD = Number(v.achatUSD) ? Number(v.achatUSD) * taux : 0;
-  const fraisTotal = FRAIS_FIXES.reduce((a, f) => a + (Number(v[f.key]) || 0), 0);
+  const fraisTotal = FRAIS_FIXES.reduce((a, f) => {
+    const montant = Number(v[f.key]) || 0;
+    const devise = v[f.devKey] || "DZD";
+    const taux = devise === "USD" ? Number(params.tauxUSD) : devise === "EUR" ? Number(params.tauxEUR) : 1;
+    return a + montant * taux;
+  }, 0);
   const coutTotal = achatDZD + fraisTotal;
   const hasCouts = !!Number(v.achatUSD);
   const coutTotalDisplay = hasCouts ? coutTotal : "";
@@ -165,7 +172,7 @@ function VehiculeForm({ initial, onSave, onClose, params }) {
     arrivePrevue: "", venteReelle: "", achatUSD: "", tauxVehicule: "",
     acheteur: "Smaine", commercial_nom: params.commercial_nom || "Yacine", commercial_commission: 0,
     ventePrevueDZD: "", venteReelleDZD: "",
-    ...Object.fromEntries(FRAIS_FIXES.flatMap(f => [[f.key, ""], ...(f.dateKey ? [[f.dateKey, ""]] : [])]))
+    ...Object.fromEntries(FRAIS_FIXES.flatMap(f => [[f.key, ""], [f.devKey, "DZD"], ...(f.dateKey ? [[f.dateKey, ""]] : [])]))
   };
   const [f, setF] = useState(initial || blank);
   const [saving, setSaving] = useState(false);
@@ -370,6 +377,14 @@ export default function App() {
   const updVeh = async (f) => { const { error } = await supabase.from("vehicules").update(vehToDB(f)).eq("id", f.id); if (error) { showToast("Erreur : " + error.message, "danger"); return; } setVehicules(p => p.map(v => v.id === f.id ? { ...f, ...calcVehicule(f, params) } : v)); setModal(null); showToast("Véhicule mis à jour"); };
   const delVeh = async (id) => { await supabase.from("vehicules").delete().eq("id", id); setVehicules(p => p.filter(v => v.id !== id)); showToast("Supprimé", "danger"); };
 
+  const dupliquerVeh = async (v) => {
+    const { id, margeReelle, margePct, margePrevue, coutTotalDisplay, fraisTotal, achatDZD, cashEngage, ...rest } = v;
+    const { data, error } = await supabase.from("vehicules").insert(vehToDB(rest)).select().single();
+    if (error) { showToast("Erreur : " + error.message, "danger"); return; }
+    setVehicules(p => [...p, dbToVeh(data)]);
+    showToast("Véhicule dupliqué ✓");
+  };
+
   const addFlux = (table, setter) => async (f) => { const { data, error } = await supabase.from(table).insert(fluxToDB(f)).select().single(); if (error) { showToast("Erreur : " + error.message, "danger"); return; } setter(p => [...p, dbToFlux(data)].sort((a, b) => a.date.localeCompare(b.date))); setModal(null); showToast("Enregistré"); };
   const delFlux = (table, setter) => async (id) => { await supabase.from(table).delete().eq("id", id); setter(p => p.filter(m => m.id !== id)); showToast("Supprimé", "danger"); };
 
@@ -479,7 +494,7 @@ export default function App() {
                     <td style={{ ...td, ...mono, fontSize: 11, color: v.margePct === "" ? "#475569" : v.margePct >= 0 ? "#4ade80" : "#f87171" }}>{fmtPct(v.margePct)}</td>
                     <td style={{ ...td, ...mono, fontSize: 11, color: "#c084fc" }}>{v.commercial_commission ? fmtDZD(v.commercial_commission) : "—"}</td>
                     <td style={{ ...td, ...mono, fontSize: 11, color: "#f59e0b" }}>{v.cashEngage ? fmtDZD(v.cashEngage) : "—"}</td>
-                    <td style={td}><div style={{ display: "flex", gap: 4 }}><Btn variant="ghost" small onClick={() => setModal({ edit: v })}>✏</Btn><Btn variant="danger" small onClick={() => delVeh(v.id)}>✕</Btn></div></td>
+                    <td style={td}><div style={{ display: "flex", gap: 4 }}><Btn variant="info" small onClick={() => dupliquerVeh(v)} title="Dupliquer">⧉</Btn><Btn variant="ghost" small onClick={() => setModal({ edit: v })}>✏</Btn><Btn variant="danger" small onClick={() => delVeh(v.id)}>✕</Btn></div></td>
                   </tr>)}</tbody>
                 </table>
               </div>}
