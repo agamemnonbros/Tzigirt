@@ -46,6 +46,7 @@ const dbToVeh = (r) => ({
   acheteur: r.acheteur || "Smaine",
   commercial_nom: r.commercial_nom || "Yacine",
   commercial_commission: r.commercial_commission ?? 0,
+  commercial_commission_pct_veh: r.commercial_commission_pct_veh ?? "",
   commission_date: r.commission_date || "",
   origine_fonds: r.origine_fonds || "",
   origine_fonds_detail: r.origine_fonds_detail || "",
@@ -66,6 +67,7 @@ const vehToDB = (f) => ({
   acheteur: f.acheteur || "Smaine",
   commercial_nom: f.commercial_nom || "Yacine",
   commercial_commission: Number(f.commercial_commission) || 0,
+  commercial_commission_pct_veh: f.commercial_commission_pct_veh ? Number(f.commercial_commission_pct_veh) : null,
   commission_date: f.commission_date || null,
   origine_fonds: f.origine_fonds || null,
   origine_fonds_detail: f.origine_fonds_detail || null,
@@ -197,7 +199,7 @@ function VehiculeForm({ initial, onSave, onClose, params, vehiculeIds }) {
     modele: "", chassis: "", statut: "Commande", dateAchat: today(),
     arrivePrevue: "", venteReelle: "", achatUSD: "", tauxVehicule: "",
     acheteur: "Smaine", commercial_nom: params.commercial_nom || "Yacine",
-    commercial_commission: 0, commission_date: "",
+    commercial_commission: 0, commercial_commission_pct_veh: "", commission_date: "",
     origine_fonds: "Fonds propres", origine_fonds_detail: "",
     ventePrevueDZD: "", venteReelleDZD: "",
     ...Object.fromEntries(FRAIS_FIXES.flatMap(f => [[f.key, ""], [f.devKey, "DZD"], ...(f.dateKey ? [[f.dateKey, ""]] : [])]))
@@ -228,7 +230,29 @@ function VehiculeForm({ initial, onSave, onClose, params, vehiculeIds }) {
         <div style={g3}>
           <F label="Acheteur (associé)">{sel("acheteur", ASSOCIES)}</F>
           <F label="Nom de l'associé commercial">{inp("commercial_nom")}</F>
-          <F label="Commission associé (DZD)">{inp("commercial_commission", "number", "0")}</F>
+          <F label="Commission associé % (sur bénéfice net)">
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <input type="number" value={f.commercial_commission_pct_veh ?? ""} onChange={e => {
+                    const pct = Number(e.target.value);
+                    u("commercial_commission_pct_veh", e.target.value);
+                    // calcul auto si on a déjà un bénéfice brut connu
+                    const taux = Number(f.tauxVehicule) || Number(params.tauxUSD);
+                    const achat = Number(f.achatUSD) ? Number(f.achatUSD) * taux : 0;
+                    const frais = FRAIS_FIXES.reduce((a, ff) => {
+                      const m = Number(f[ff.key]) || 0;
+                      const dev = f[ff.devKey] || "DZD";
+                      const tx = dev === "USD" ? Number(params.tauxUSD) : dev === "EUR" ? Number(params.tauxEUR) : 1;
+                      return a + m * tx;
+                    }, 0);
+                    const vente = Number(f.venteReelleDZD) || Number(f.ventePrevueDZD) || 0;
+                    const benefBrut = vente - achat - frais;
+                    if (benefBrut > 0 && pct > 0) u("commercial_commission", Math.round(benefBrut * pct / 100));
+                  }} placeholder="%" style={{ width: 70 }} />
+                  <span style={{ fontSize: 11, color: "#64748b" }}>%</span>
+                  {f.commercial_commission_pct_veh && <span style={{ fontSize: 11, fontFamily: "'DM Mono', monospace", color: "#c084fc" }}>= {fmt(Number(f.commercial_commission))} DZD</span>}
+                </div>
+          </F>
+          <F label="Commission DZD (modifiable manuellement)">{inp("commercial_commission", "number", "0")}</F>
           <F label="Date paiement commission">{inp("commission_date", "date")}</F>
         </div>
       </Section>
@@ -548,7 +572,7 @@ export default function App() {
         if (ff.dateKey && v[ff.dateKey] && Number(v[ff.key])) {
           const devise = v[ff.devKey] || "DZD";
           const taux = devise === "USD" ? Number(params.tauxUSD) : devise === "EUR" ? Number(params.tauxEUR) : 1;
-          list.push({ date: v[ff.dateKey], label: ff.label, montant: Number(v[ff.key]) * taux, vehicule: v.modele, id: v.id });
+          list.push({ date: v[ff.dateKey], label: ff.label, montant: Number(v[ff.key]) * taux, vehicule: v.modele, vin: v.chassis, id: v.id });
         }
       });
     });
@@ -589,6 +613,12 @@ export default function App() {
   const delP = delFlux("previsions", setPrevisions);
 
   const addNote = async (f) => { const { data, error } = await supabase.from("notes").insert(noteToDB(f)).select().single(); if (error) { showToast("Erreur : " + error.message, "danger"); return; } setNotes(p => [dbToNote(data), ...p]); setModal(null); showToast("Note ajoutée"); };
+  const updNote = async (id, f) => {
+    const { error } = await supabase.from("notes").update(noteToDB(f)).eq("id", id);
+    if (error) { showToast("Erreur : " + error.message, "danger"); return; }
+    setNotes(p => p.map(n => n.id === id ? { ...n, ...f } : n));
+    setModal(null); showToast("Note mise à jour");
+  };
   const delNote = async (id) => { await supabase.from("notes").delete().eq("id", id); setNotes(p => p.filter(n => n.id !== id)); showToast("Note supprimée", "danger"); };
 
   const kG = { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(165px, 1fr))", gap: 12, marginBottom: 20 };
@@ -685,7 +715,7 @@ export default function App() {
                     <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
                       <span style={{ ...mono, fontSize: 11, color: "#64748b" }}>{e.date}</span>
                       <span style={{ fontSize: 12, color: "#cbd5e1" }}>{e.label}</span>
-                      <span style={{ fontSize: 11, color: "#94a3b8" }}>· {e.vehicule}</span>
+                      <span style={{ fontSize: 11, color: "#94a3b8" }}>· {e.vehicule}{e.vin ? <span style={{ fontFamily: "'DM Mono', monospace", color: "#475569", fontSize: 10 }}> — {e.vin}</span> : ""}</span>
                     </div>
                     <div style={{ textAlign: "right" }}>
                       <div style={{ ...mono, fontSize: 12, fontWeight: 700, color: "#f87171" }}>{fmtDZD(e.montant)}</div>
@@ -712,7 +742,7 @@ export default function App() {
                   <thead><tr>{["#","Modèle","Acheteur","Associé","Statut","Coût total","Prix prévu","Prix réel","Marge nette","Marge %","Commission","Cash engagé",""].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
                   <tbody>{vehFiltered.map(v => <tr key={v.id} style={{ opacity: v.archived ? 0.45 : 1 }}>
                     <td style={{ ...td, ...mono, color: "#475569", fontSize: 11 }}>{v.id}</td>
-                    <td style={{ ...td, color: "#f1f5f9", fontWeight: 500 }}>{v.modele}{v.chassis && <div style={{ fontSize: 10, color: "#475569", ...mono }}>{v.chassis}</div>}</td>
+                    <td style={{ ...td, color: "#f1f5f9", fontWeight: 500 }}>{v.modele}{v.chassis && <div style={{ fontSize: 10, color: "#475569", fontFamily: "'DM Mono', monospace", marginTop: 1 }}>VIN: {v.chassis}</div>}</td>
                     <td style={td}><AssociBadge nom={v.acheteur} /></td>
                     <td style={{ ...td, fontSize: 11, color: "#94a3b8" }}>{v.commercial_nom}</td>
                     <td style={td}><Badge statut={v.statut} /></td>
@@ -810,6 +840,7 @@ export default function App() {
                         {n.afficher_dashboard && <span style={{ fontSize: 10, background: "#1a1200", color: "#fbbf24", padding: "2px 6px", borderRadius: 99, fontWeight: 600 }}>Dashboard</span>}
                       </div>
                       <div style={{ display: "flex", gap: 4 }}>
+                        <Btn variant="ghost" small onClick={() => setModal({ editNote: n })}>✏</Btn>
                         <Btn variant="danger" small onClick={() => delNote(n.id)}>✕</Btn>
                       </div>
                     </div>
@@ -841,6 +872,7 @@ export default function App() {
         }} onClose={() => setModal(null)} vehiculeIds={vehiculeIds} />
       </Modal>}
       {modal === "note" && <Modal title="Nouvelle note" onClose={() => setModal(null)}><NoteForm onSave={addNote} onClose={() => setModal(null)} vehiculeIds={vehiculeIds} /></Modal>}
+      {modal?.editNote && <Modal title="Modifier la note" onClose={() => setModal(null)}><NoteForm initial={modal.editNote} onSave={(f) => updNote(modal.editNote.id, f)} onClose={() => setModal(null)} vehiculeIds={vehiculeIds} /></Modal>}
     </div>
   );
 }
