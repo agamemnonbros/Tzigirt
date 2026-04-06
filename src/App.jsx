@@ -104,7 +104,13 @@ function calcVehicule(v, params) {
   const coutTotal = achatDZD + fraisTotal;
   const hasCouts = !!Number(v.achatUSD);
   const coutTotalDisplay = hasCouts ? coutTotal : "";
-  const commission = Number(v.commercial_commission) || 0;
+  // Commission : calculée depuis le % si renseigné, sinon valeur fixe
+  const pctComm = Number(v.commercial_commission_pct_veh);
+  const venteCalc = Number(v.venteReelleDZD) || Number(v.ventePrevueDZD) || 0;
+  const benefBrut = venteCalc > 0 ? venteCalc - coutTotal : 0;
+  const commission = (pctComm > 0 && benefBrut > 0)
+    ? Math.round(benefBrut * pctComm / 100)
+    : (Number(v.commercial_commission) || 0);
   const margeReelle = (hasCouts && Number(v.venteReelleDZD)) ? Number(v.venteReelleDZD) - coutTotal - commission : "";
   const margePct = (margeReelle !== "" && Number(v.venteReelleDZD)) ? margeReelle / Number(v.venteReelleDZD) : "";
   const margePrevue = (hasCouts && Number(v.ventePrevueDZD)) ? Number(v.ventePrevueDZD) - coutTotal - commission : "";
@@ -231,11 +237,12 @@ function VehiculeForm({ initial, onSave, onClose, params, vehiculeIds }) {
           <F label="Acheteur (associé)">{sel("acheteur", ASSOCIES)}</F>
           <F label="Nom de l'associé commercial">{inp("commercial_nom")}</F>
           <F label="Commission associé % (sur bénéfice net)">
-                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                  <input type="number" value={f.commercial_commission_pct_veh ?? ""} onChange={e => {
-                    const pct = Number(e.target.value);
-                    u("commercial_commission_pct_veh", e.target.value);
-                    // calcul auto si on a déjà un bénéfice brut connu
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <input type="number" value={f.commercial_commission_pct_veh ?? ""} onChange={e => u("commercial_commission_pct_veh", e.target.value)} placeholder="ex: 10" style={{ width: 80 }} />
+                  <span style={{ fontSize: 11, color: "#64748b" }}>%</span>
+                  {(() => {
+                    const pct = Number(f.commercial_commission_pct_veh);
+                    if (!pct) return null;
                     const taux = Number(f.tauxVehicule) || Number(params.tauxUSD);
                     const achat = Number(f.achatUSD) ? Number(f.achatUSD) * taux : 0;
                     const frais = FRAIS_FIXES.reduce((a, ff) => {
@@ -245,14 +252,37 @@ function VehiculeForm({ initial, onSave, onClose, params, vehiculeIds }) {
                       return a + m * tx;
                     }, 0);
                     const vente = Number(f.venteReelleDZD) || Number(f.ventePrevueDZD) || 0;
-                    const benefBrut = vente - achat - frais;
-                    if (benefBrut > 0 && pct > 0) u("commercial_commission", Math.round(benefBrut * pct / 100));
-                  }} placeholder="%" style={{ width: 70 }} />
-                  <span style={{ fontSize: 11, color: "#64748b" }}>%</span>
-                  {f.commercial_commission_pct_veh && <span style={{ fontSize: 11, fontFamily: "'DM Mono', monospace", color: "#c084fc" }}>= {fmt(Number(f.commercial_commission))} DZD</span>}
+                    const benefBrut = vente > 0 ? vente - achat - frais : 0;
+                    const commCalc = benefBrut > 0 ? Math.round(benefBrut * pct / 100) : 0;
+                    return <span style={{ fontSize: 11, fontFamily: "'DM Mono', monospace", color: "#c084fc" }}>
+                      {benefBrut > 0 ? `sur ${fmt(benefBrut)} DZD = ${fmt(commCalc)} DZD` : "— (saisir un prix de vente)"}
+                    </span>;
+                  })()}
                 </div>
           </F>
-          <F label="Commission DZD (modifiable manuellement)">{inp("commercial_commission", "number", "0")}</F>
+          <F label="Commission DZD (calculée auto ou saisie manuelle)">
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  {(() => {
+                    const pct = Number(f.commercial_commission_pct_veh);
+                    const taux = Number(f.tauxVehicule) || Number(params.tauxUSD);
+                    const achat = Number(f.achatUSD) ? Number(f.achatUSD) * taux : 0;
+                    const frais = FRAIS_FIXES.reduce((a, ff) => {
+                      const m = Number(f[ff.key]) || 0;
+                      const dev = f[ff.devKey] || "DZD";
+                      const tx = dev === "USD" ? Number(params.tauxUSD) : dev === "EUR" ? Number(params.tauxEUR) : 1;
+                      return a + m * tx;
+                    }, 0);
+                    const vente = Number(f.venteReelleDZD) || Number(f.ventePrevueDZD) || 0;
+                    const benefBrut = vente > 0 ? vente - achat - frais : 0;
+                    const commCalc = (pct > 0 && benefBrut > 0) ? Math.round(benefBrut * pct / 100) : null;
+                    const displayVal = commCalc !== null ? commCalc : (f.commercial_commission ?? "");
+                    return <>
+                      <input type="number" value={displayVal} onChange={e => { u("commercial_commission", e.target.value); u("commercial_commission_pct_veh", ""); }} style={{ flex: 1 }} placeholder="0" />
+                      {commCalc !== null && <span style={{ fontSize: 10, color: "#475569" }}>auto</span>}
+                    </>;
+                  })()}
+                </div>
+          </F>
           <F label="Date paiement commission">{inp("commission_date", "date")}</F>
         </div>
       </Section>
@@ -563,7 +593,7 @@ export default function App() {
   const vendus = useMemo(() => vehALaDate.filter(v => (v._statutDate || v.statut) === "Vendu").length, [vehALaDate]);
   const alerte = (datePrevi ? soldeDisplay : pointBas) < params.reserve;
 
-  const vehiculeIds = vehicules.map(v => ({ id: v.id, label: `#${v.id} ${v.modele} (${v.acheteur})` }));
+  const vehiculeIds = vehicules.map(v => ({ id: v.id, label: `#${v.id} ${v.modele}${v.chassis ? ' — VIN: ' + v.chassis : ''} (${v.acheteur})` }));
 
   const echeances = useMemo(() => {
     const list = [];
@@ -635,6 +665,12 @@ export default function App() {
 
   return (
     <div style={{ minHeight: "100vh", background: "#020617" }}>
+      <style>{`
+        input[type=number]::-webkit-inner-spin-button,
+        input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+        input[type=number] { -moz-appearance: textfield; }
+        input[type=number] { appearance: textfield; }
+      `}</style>
       {toast && <div style={{ position: "fixed", bottom: 24, right: 24, zIndex: 200, background: toast.type === "danger" ? "#7f1d1d" : "#0a2010", border: `1px solid ${toast.type === "danger" ? "#f87171" : "#4ade80"}`, color: toast.type === "danger" ? "#f87171" : "#4ade80", padding: "10px 16px", borderRadius: 10, fontSize: 13, fontWeight: 500, boxShadow: "0 4px 20px rgba(0,0,0,.5)" }}>{toast.msg}</div>}
 
       {/* Header */}
