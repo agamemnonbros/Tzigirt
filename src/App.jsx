@@ -497,6 +497,16 @@ function ParamsForm({ params, onSave, onClose }) {
 }
 
 // ─── App ───────────────────────────────────────────────────────
+// Bloque le scroll sur tous les inputs number (évite modification accidentelle)
+function WheelBlocker() {
+  useEffect(() => {
+    const handler = (e) => { if (document.activeElement?.type === "number") e.preventDefault(); };
+    document.addEventListener("wheel", handler, { passive: false });
+    return () => document.removeEventListener("wheel", handler);
+  }, []);
+  return null;
+}
+
 export default function App() {
   const [tab, setTab] = useState("dashboard");
   const [params, setParams] = useState({ soldeDepart: 0, tauxUSD: 280, tauxEUR: 305, reserve: 500000, commercial_nom: "Yacine", commercial_commission_pct: 2 });
@@ -668,9 +678,9 @@ export default function App() {
       <style>{`
         input[type=number]::-webkit-inner-spin-button,
         input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
-        input[type=number] { -moz-appearance: textfield; }
-        input[type=number] { appearance: textfield; }
+        input[type=number] { -moz-appearance: textfield; appearance: textfield; }
       `}</style>
+      <WheelBlocker />
       {toast && <div style={{ position: "fixed", bottom: 24, right: 24, zIndex: 200, background: toast.type === "danger" ? "#7f1d1d" : "#0a2010", border: `1px solid ${toast.type === "danger" ? "#f87171" : "#4ade80"}`, color: toast.type === "danger" ? "#f87171" : "#4ade80", padding: "10px 16px", borderRadius: 10, fontSize: 13, fontWeight: 500, boxShadow: "0 4px 20px rgba(0,0,0,.5)" }}>{toast.msg}</div>}
 
       {/* Header */}
